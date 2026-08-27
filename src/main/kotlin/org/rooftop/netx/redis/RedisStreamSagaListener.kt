@@ -8,6 +8,7 @@ import org.rooftop.netx.engine.core.Saga
 import org.rooftop.netx.engine.logging.info
 import org.springframework.data.redis.connection.ReactiveRedisConnectionFactory
 import org.springframework.data.redis.connection.stream.Consumer
+import org.springframework.data.redis.connection.stream.MapRecord
 import org.springframework.data.redis.connection.stream.ReadOffset
 import org.springframework.data.redis.connection.stream.StreamOffset
 import org.springframework.data.redis.core.ReactiveRedisTemplate
@@ -25,18 +26,26 @@ internal class RedisStreamSagaListener(
     private val nodeName: String,
     private val reactiveRedisTemplate: ReactiveRedisTemplate<String, Saga>,
     private val objectMapper: ObjectMapper,
+    receiverFactory: (() -> StreamReceiver<String, MapRecord<String, String, String>>)? = null,
+    groupInitializer: (() -> Flux<String>)? = null,
 ) : AbstractSagaListener(backpressureSize, sagaDispatcher) {
 
     private val options = StreamReceiver.StreamReceiverOptions.builder()
         .pollTimeout(1.hours.toJavaDuration())
         .build()
 
-    private val receiver = StreamReceiver.create(connectionFactory, options)
+    private val receiverFactory = receiverFactory ?: {
+        StreamReceiver.create(connectionFactory, options)
+    }
+
+    private val groupInitializer = groupInitializer ?: {
+        createGroupIfNotExists()
+    }
 
     override fun receive(): Flux<Pair<Saga, String>> {
-        return createGroupIfNotExists()
+        return groupInitializer()
             .flatMap {
-                receiver.receive(
+                receiverFactory().receive(
                     Consumer.from(nodeGroup, nodeName),
                     StreamOffset.create(STREAM_KEY, ReadOffset.from(">"))
                 ).map {
